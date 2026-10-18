@@ -1,0 +1,10 @@
+{
+  "name": "cca-quiz",
+  "version": "0.1.0",
+  "description": "Multiple-choice practice for the Claude Certified Architect exams, shown above the prompt while Claude works. Toggle with /quiz.",
+  "author": {
+    "name": "namdar12",
+    "url": "https://github.com/namdar12"
+  },
+  "types": "./types/index.d.ts"
+}
