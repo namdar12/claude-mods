@@ -1,6 +1,6 @@
 {
   "name": "mermaid-pane",
-  "version": "0.3.0",
+  "version": "0.2.0",
   "description": "Claude renders Mermaid diagrams into a side pane (auto-opens on any ```mermaid block in a reply); reopen with /diagrams",
   "author": {
     "name": "namdar12",

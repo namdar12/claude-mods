@@ -12,25 +12,7 @@ const diagrams = atom({ plugin: 'mermaid-pane', key: 'diagrams' } as const, [] a
 const index = atom({ plugin: 'mermaid-pane', key: 'index' } as const, 0)
 const showSource = atom({ plugin: 'mermaid-pane', key: 'showSource' } as const, false)
 
-const BMP_MAX = 640
-const INK = 0.6
-// Quadrant glyph per mask of foreground sub-pixels: 1 top-left, 2 top-right, 4 bottom-left, 8 bottom-right.
-const QUADRANTS = [
-  0x20, 0x2598, 0x259d, 0x2580, 0x2596, 0x258c, 0x259e, 0x259b,
-  0x2597, 0x259a, 0x2590, 0x259c, 0x2584, 0x2599, 0x259f, 0x2588,
-]
-
 const pending = new Set<string>()
-const pixelCache = new Map<string, Promise<Bitmap | undefined>>()
-const cellCache = new Map<string, string>()
-
-type Bitmap = { width: number; height: number; rgb: Uint8Array }
-
-const bytes = {
-  from: (base64: string): Uint8Array =>
-    (Uint8Array as unknown as { fromBase64: (s: string) => Uint8Array }).fromBase64(base64),
-  to: (data: Uint8Array): string => (data as unknown as { toBase64: () => string }).toBase64(),
-}
 
 const escapeHtml = (text: string) =>
   text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -64,174 +46,6 @@ export const fitImage = (
   }
 
   return { columns, rows: Math.min(255, rows) }
-}
-
-// An uncompressed 24- or 32-bit BMP, as `sips -s format bmp` writes it.
-export const parseBmp = (data: Uint8Array): Bitmap | undefined => {
-  if (data.length < 54 || data[0] !== 0x42 || data[1] !== 0x4d) return undefined
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-  const offset = view.getUint32(10, true)
-  const width = view.getInt32(18, true)
-  const rawHeight = view.getInt32(22, true)
-  const bpp = view.getUint16(28, true)
-  const compression = view.getUint32(30, true)
-  if (width <= 0 || rawHeight === 0 || (bpp !== 24 && bpp !== 32)) return undefined
-  if (compression !== 0 && !(compression === 3 && bpp === 32)) return undefined
-
-  const height = Math.abs(rawHeight)
-  const step = bpp / 8
-  const stride = Math.ceil((width * step) / 4) * 4
-  if (offset + stride * (height - 1) + width * step > data.length) return undefined
-
-  const rgb = new Uint8Array(width * height * 3)
-  for (let y = 0; y < height; y++) {
-    const row = offset + stride * (rawHeight > 0 ? height - 1 - y : y)
-    for (let x = 0; x < width; x++) {
-      const at = row + x * step
-      const to = (y * width + x) * 3
-      rgb[to] = data[at + 2]!
-      rgb[to + 1] = data[at + 1]!
-      rgb[to + 2] = data[at]!
-    }
-  }
-
-  return { width, height, rgb }
-}
-
-// The picture as a Raster's cells: each cell is 2x2 sub-pixels, split into the two
-// colors farthest apart and drawn as the quadrant glyph that covers the first.
-export const quadrantCells = (image: Bitmap, columns: number, rows: number) => {
-  const sw = columns * 2
-  const sh = rows * 2
-  const sub = new Float32Array(sw * sh * 3)
-  for (let sy = 0; sy < sh; sy++) {
-    const y0 = Math.floor((sy * image.height) / sh)
-    const y1 = Math.max(y0 + 1, Math.floor(((sy + 1) * image.height) / sh))
-    for (let sx = 0; sx < sw; sx++) {
-      const x0 = Math.floor((sx * image.width) / sw)
-      const x1 = Math.max(x0 + 1, Math.floor(((sx + 1) * image.width) / sw))
-      let r = 0
-      let g = 0
-      let b = 0
-      let ink = Infinity
-      let inkAt = 0
-      for (let y = y0; y < y1; y++) {
-        for (let x = x0; x < x1; x++) {
-          const at = (y * image.width + x) * 3
-          r += image.rgb[at]!
-          g += image.rgb[at + 1]!
-          b += image.rgb[at + 2]!
-          const light = image.rgb[at]! + image.rgb[at + 1]! + image.rgb[at + 2]!
-          if (light < ink) [ink, inkAt] = [light, at]
-        }
-      }
-      // Lean toward the darkest pixel, so thin strokes and text keep their ink once shrunk.
-      const n = (y1 - y0) * (x1 - x0)
-      const to = (sy * sw + sx) * 3
-      sub[to] = (r / n) * (1 - INK) + image.rgb[inkAt]! * INK
-      sub[to + 1] = (g / n) * (1 - INK) + image.rgb[inkAt + 1]! * INK
-      sub[to + 2] = (b / n) * (1 - INK) + image.rgb[inkAt + 2]! * INK
-    }
-  }
-
-  const words = new Uint32Array(columns * rows * 3)
-  const px = [0, 0, 0, 0]
-  const pack = (r: number, g: number, b: number) =>
-    (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b)
-  const dist = (a: number, c: number) =>
-    (sub[a]! - sub[c]!) ** 2 + (sub[a + 1]! - sub[c + 1]!) ** 2 + (sub[a + 2]! - sub[c + 2]!) ** 2
-
-  for (let cy = 0; cy < rows; cy++) {
-    for (let cx = 0; cx < columns; cx++) {
-      px[0] = ((cy * 2) * sw + cx * 2) * 3
-      px[1] = px[0] + 3
-      px[2] = ((cy * 2 + 1) * sw + cx * 2) * 3
-      px[3] = px[2] + 3
-
-      let far = 0
-      let a = 0
-      let c = 1
-      for (let i = 0; i < 4; i++) {
-        for (let j = i + 1; j < 4; j++) {
-          const d = dist(px[i]!, px[j]!)
-          if (d > far) [far, a, c] = [d, i, j]
-        }
-      }
-
-      const out = (cy * columns + cx) * 3
-      if (far < 24 * 24) {
-        const avg = [0, 1, 2].map(k => (sub[px[0]! + k]! + sub[px[1]! + k]! + sub[px[2]! + k]! + sub[px[3]! + k]!) / 4)
-        words[out] = 0x20
-        words[out + 1] = 0x01000000
-        words[out + 2] = pack(avg[0]!, avg[1]!, avg[2]!)
-        continue
-      }
-
-      let mask = 0
-      const fg = [0, 0, 0, 0]
-      const bg = [0, 0, 0, 0]
-      for (let i = 0; i < 4; i++) {
-        const isFg = dist(px[i]!, px[a]!) <= dist(px[i]!, px[c]!)
-        const sum = isFg ? fg : bg
-        if (isFg) mask |= 1 << i
-        sum[0]! += sub[px[i]!]!
-        sum[1]! += sub[px[i]! + 1]!
-        sum[2]! += sub[px[i]! + 2]!
-        sum[3]! += 1
-      }
-      words[out] = QUADRANTS[mask]!
-      words[out + 1] = pack(fg[0]! / fg[3]!, fg[1]! / fg[3]!, fg[2]! / fg[3]!)
-      words[out + 2] = pack(bg[0]! / bg[3]!, bg[1]! / bg[3]!, bg[2]! / bg[3]!)
-    }
-  }
-
-  return bytes.to(new Uint8Array(words.buffer))
-}
-
-export const hasKittyGraphics = (env: string) => {
-  const [program = '', term = '', kittyWindow = ''] = env.split('|')
-
-  return /ghostty/i.test(program) || /kitty/i.test(term) || kittyWindow.trim() !== ''
-}
-
-let kittyPromise: Promise<boolean> | undefined
-
-const canDrawImages = ($: EngineInterface) => {
-  kittyPromise ??= $.process
-    .run(['sh', '-c', 'printf "%s|%s|%s" "$TERM_PROGRAM" "$TERM" "$KITTY_WINDOW_ID"'])
-    .then(({ stdout }) => hasKittyGraphics(stdout))
-    .catch(() => false)
-
-  return kittyPromise
-}
-
-const pixelsOf = ($: EngineInterface, diagram: Diagram) => {
-  const { bmpPath } = diagram
-  if (!bmpPath) return Promise.resolve(undefined)
-  let found = pixelCache.get(diagram.id)
-  if (!found) {
-    found = $.fs
-      .read(bmpPath, { as: 'bytes' })
-      .then(({ base64 }) => parseBmp(bytes.from(base64)))
-      .catch(() => undefined)
-    pixelCache.set(diagram.id, found)
-    if (pixelCache.size > 8) pixelCache.delete(pixelCache.keys().next().value!)
-  }
-
-  return found
-}
-
-const rasterOf = async ($: EngineInterface, diagram: Diagram, columns: number, rows: number) => {
-  const key = `${diagram.id}:${columns}x${rows}`
-  const cached = cellCache.get(key)
-  if (cached) return cached
-  const image = await pixelsOf($, diagram)
-  if (!image) return undefined
-  const cells = quadrantCells(image, columns, rows)
-  cellCache.set(key, cells)
-  if (cellCache.size > 16) cellCache.delete(cellCache.keys().next().value!)
-
-  return cells
 }
 
 export const cleanSource = (raw: string) =>
@@ -304,11 +118,6 @@ const render = async ($: EngineInterface, title: string, source: string): Promis
   diagram.width = Number(size?.stdout.match(/pixelWidth: (\d+)/)?.[1]) || undefined
   diagram.height = Number(size?.stdout.match(/pixelHeight: (\d+)/)?.[1]) || undefined
 
-  const bmp = await $.process
-    .run(['sips', '-s', 'format', 'bmp', '-Z', String(BMP_MAX), diagram.pngPath, '--out', `${base}.bmp`])
-    .catch(() => undefined)
-  if (bmp?.exitCode === 0) diagram.bmpPath = `${base}.bmp`
-
   return diagram
 }
 
@@ -350,7 +159,6 @@ const responseText = (content: readonly { type: string; [field: string]: unknown
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
-    void canDrawImages($)
     await $.command.register({
       name: 'diagrams',
       description: 'Open the Mermaid diagrams pane (close it with its x; reopen any time)',
@@ -512,20 +320,15 @@ export const register: Register = on => {
     } else if (isSource || !current.pngPath || e.surface !== 'terminal') {
       body = <Code source={current.source} language="mermaid" startLine={1} />
     } else {
-      const { Image, Raster } = $.ui.resolve(e)
+      const { Image } = $.ui.resolve(e)
       const fit = fitImage(current.width, current.height, columns, Math.max(4, bodyRows - 7))
-      const cells = (await canDrawImages($))
-        ? undefined
-        : await rasterOf($, current, Math.min(512, fit.columns), Math.min(256, fit.rows))
-      body = cells ? (
-        <Raster key={`raster-${current.id}`} columns={Math.min(512, fit.columns)} rows={Math.min(256, fit.rows)} cells={cells} />
-      ) : (
+      body = (
         <Image
           key={current.id}
           source={{ file: current.pngPath, format: 'png' }}
           columns={fit.columns}
           rows={fit.rows}
-          alt={`[${current.title}] This terminal can't draw the picture: press o to open it in the browser, s for source.`}
+          alt={`[${current.title}] This terminal can't draw images inline: press o to open it in the browser, s for source.`}
         />
       )
     }

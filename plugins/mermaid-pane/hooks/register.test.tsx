@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { cleanSource, extractMermaid, fitImage, hasKittyGraphics, htmlPage, parseBmp, quadrantCells } from './register'
+import { cleanSource, extractMermaid, fitImage, htmlPage } from './register'
 
 const PANE = {
   title: 'Diagrams',
@@ -29,34 +29,6 @@ describe('helpers', () => {
 
   test('cleanSource strips fences', async () => {
     expect(cleanSource('```mermaid\nflowchart LR\n  A --> B\n```')).toBe('flowchart LR\n  A --> B')
-  })
-
-  test('hasKittyGraphics knows kitty and Ghostty, not Warp', async () => {
-    expect(hasKittyGraphics(GHOSTTY)).toBe(true)
-    expect(hasKittyGraphics('|xterm-kitty|')).toBe(true)
-    expect(hasKittyGraphics('|xterm-256color|1')).toBe(true)
-    expect(hasKittyGraphics(WARP)).toBe(false)
-    expect(hasKittyGraphics('iTerm.app|xterm-256color|')).toBe(false)
-  })
-
-  test('parseBmp reads top-down and bottom-up rows', async () => {
-    const image = parseBmp(bmp([[K, W], [W, K]]))!
-    expect(image.width).toBe(2)
-    expect(Array.from(image.rgb)).toEqual([0, 0, 0, 255, 255, 255, 255, 255, 255, 0, 0, 0])
-    const flipped = bmp([[K, W], [W, K]])
-    new DataView(flipped.buffer).setInt32(22, 2, true)
-    expect(Array.from(parseBmp(flipped)!.rgb.slice(0, 3))).toEqual([255, 255, 255])
-    expect(parseBmp(new Uint8Array(10))).toBeUndefined()
-  })
-
-  test('quadrantCells draws the dark half of each cell', async () => {
-    const image = parseBmp(bmp([[K, W, W, W], [K, W, W, W]]))!
-    const words = new Uint32Array(fromBase64(quadrantCells(image, 2, 1)).buffer)
-    expect(words[0]).toBe(0x258c)
-    expect(words[1]).toBe(0x000000)
-    expect(words[2]).toBe(0xffffff)
-    expect(words[3]).toBe(0x20)
-    expect(words[5]).toBe(0xffffff)
   })
 
   test('extractMermaid finds each fenced block and titles it', async () => {
@@ -87,42 +59,9 @@ const ran = (stdout: string) => ({
   value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
 })
 
-// A top-down 24-bit BMP, as sips writes it: rows of [r, g, b] pixels.
-const bmp = (pixels: number[][][]) => {
-  const height = pixels.length
-  const width = pixels[0]!.length
-  const stride = Math.ceil((width * 3) / 4) * 4
-  const data = new Uint8Array(54 + stride * height)
-  const view = new DataView(data.buffer)
-  data.set([0x42, 0x4d])
-  view.setUint32(2, data.length, true)
-  view.setUint32(10, 54, true)
-  view.setUint32(14, 40, true)
-  view.setInt32(18, width, true)
-  view.setInt32(22, -height, true)
-  view.setUint16(26, 1, true)
-  view.setUint16(28, 24, true)
-  pixels.forEach((row, y) =>
-    row.forEach(([r, g, b], x) => data.set([b!, g!, r!], 54 + y * stride + x * 3)),
-  )
-
-  return data
-}
-
-const toBase64 = (data: Uint8Array) => (data as unknown as { toBase64: () => string }).toBase64()
-const fromBase64 = (s: string) =>
-  (Uint8Array as unknown as { fromBase64: (s: string) => Uint8Array }).fromBase64(s)
-
-const W = [255, 255, 255]
-const K = [0, 0, 0]
-const WARP = 'WarpTerminal|xterm-256color|'
-const GHOSTTY = 'ghostty|xterm-ghostty|'
-
-const host = (on: On, renders: string[], opens: unknown[] = [], env = GHOSTTY) => {
-  on('fs.read', () => ({ value: { base64: toBase64(bmp([[K, W, W, W], [K, W, W, W]])) } }))
+const host = (on: On, renders: string[], opens: unknown[] = []) => {
   on('process.run', ($, e) => {
     if (e.argv[0] === 'printenv') return ran('/Users/me\n')
-    if (e.argv[0] === 'sh') return ran(env)
     if (e.argv[0] === 'sips') return ran('pixelWidth: 1000\npixelHeight: 250\n')
     renders.push(e.argv.join(' '))
     return ran('')
@@ -177,15 +116,6 @@ describe('pane', () => {
 
     await ui.press({ key: 'source' })
     expect(await ui.find({ type: 'Code' })).toBeDefined()
-    await ui.unmount()
-  })
-
-  test('a terminal without kitty graphics draws the diagram as cells', async ($, on) => {
-    host(on, [], [], WARP)
-    await $.tool.call(draw('Cells'))
-    const ui = await mount($, 'terminal')
-    expect(await ui.find({ type: 'Raster' })).toBeDefined()
-    expect(await ui.find({ type: 'Image' })).toBeUndefined()
     await ui.unmount()
   })
 
