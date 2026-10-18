@@ -15,6 +15,53 @@ const showSource = atom({ plugin: 'mermaid-pane', key: 'showSource' } as const, 
 const pan = atom({ plugin: 'mermaid-pane', key: 'pan' } as const, 0)
 
 const PAN_STEP = 20
+const LABEL_WIDTH = 16
+const DOCK_MIN = 44
+const DOCK_MAX = 72
+const INLINE_ROWS = 30
+
+// Breaks a label into lines of about `width` characters, joined by <br/>.
+export const wrapLabel = (text: string, width = LABEL_WIDTH) => {
+  const words = text.replace(/<br\s*\/?>/gi, ' ').trim().split(/\s+/)
+  const lines: string[] = []
+  let line = ''
+  for (const word of words) {
+    if (line && line.length + 1 + word.length > width) {
+      lines.push(line)
+      line = word
+    } else {
+      line = line ? `${line} ${word}` : word
+    }
+  }
+  if (line) lines.push(line)
+
+  return lines.join('<br/>')
+}
+
+// Wraps long labels so a diagram drawn as text fits a narrow pane: sequence messages
+// and participant names (notes draw wrong wrapped), flowchart [box] labels and |edge| labels.
+export const narrowSource = (source: string, width = LABEL_WIDTH) => {
+  const long = (text: string) => text.trim().length > width
+  const isSequence = /^\s*sequenceDiagram\b/.test(source)
+
+  return source
+    .split('\n')
+    .map(line => {
+      if (isSequence) {
+        const message = line.match(/^(\s*[^:]*?(?:->>|-->>|->|-->|-x|--x|-\)|--\))[+-]?[^:]*?:)(.*)$/)
+        if (message && long(message[2]!)) return `${message[1]} ${wrapLabel(message[2]!, width)}`
+        const actor = line.match(/^(\s*(?:participant|actor)\s+\S+\s+as\s+)(.*)$/)
+        if (actor && long(actor[2]!)) return `${actor[1]}${wrapLabel(actor[2]!, width)}`
+
+        return line
+      }
+
+      return line
+        .replace(/\[([^\[\]"|]+)\]/g, (all, label: string) => (long(label) ? `[${wrapLabel(label, width)}]` : all))
+        .replace(/\|([^|"]+)\|/g, (all, label: string) => (long(label) ? `|${wrapLabel(label, width)}|` : all))
+    })
+    .join('\n')
+}
 
 const pending = new Set<string>()
 const artCache = new Map<string, TextArt>()
@@ -24,7 +71,7 @@ type TextArt = { lines: string[]; width: number } | { error: string }
 // The diagram drawn in box-drawing characters, for terminals that cannot show the PNG.
 export const textArt = (source: string): TextArt => {
   try {
-    const lines = renderMermaidASCII(source, { colorMode: 'none' })
+    const lines = renderMermaidASCII(narrowSource(source), { colorMode: 'none' })
       .split('\n')
       .map(line => line.trimEnd())
     while (lines.length && !lines.at(-1)) lines.pop()
@@ -173,8 +220,18 @@ const render = async ($: EngineInterface, title: string, source: string): Promis
   return diagram
 }
 
-const openPane = ($: EngineInterface, focus = false) =>
-  $.ui.open({ id: PANE, title: 'Diagrams', ...(focus ? { focus: true as const } : {}) })
+// The dock as wide as the diagram's text needs, within a sidebar's bounds.
+export const dockColumns = (art: TextArt | undefined) =>
+  art && 'lines' in art ? Math.min(DOCK_MAX, Math.max(DOCK_MIN, art.width + 2)) : DOCK_MAX
+
+const openPane = ($: EngineInterface, focus = false, diagram?: Diagram) =>
+  $.ui.open({
+    id: PANE,
+    title: 'Diagrams',
+    columns: dockColumns(diagram ? artOf(diagram) : undefined),
+    rows: INLINE_ROWS,
+    ...(focus ? { focus: true as const } : {}),
+  })
 
 const addDiagram = async ($: EngineInterface, title: string, source: string) => {
   $.ui.status('Rendering diagram…')
@@ -184,7 +241,7 @@ const addDiagram = async ($: EngineInterface, title: string, source: string) => 
     await update($, index, () => list.length - 1)
     await update($, showSource, () => false)
     await update($, pan, () => 0)
-    const opened = await openPane($)
+    const opened = await openPane($, false, diagram)
 
     return { diagram, count: list.length, isPlaced: opened.isPlaced }
   } finally {
@@ -239,8 +296,8 @@ export const register: Register = on => {
   })
 
   on('command.run', { command: 'diagrams' }, async $ => {
-    const opened = await openPane($, true)
     const list = await read($, diagrams)
+    const opened = await openPane($, true, list[Math.min(await read($, index), list.length - 1)])
     const count = list.length
       ? `${list.length} diagram${list.length === 1 ? '' : 's'}`
       : 'no diagrams yet'

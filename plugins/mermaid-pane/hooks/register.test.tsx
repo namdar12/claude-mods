@@ -2,7 +2,16 @@ import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { cleanSource, extractMermaid, fitImage, hasKittyGraphics, htmlPage, textArt } from './register'
+import {
+  cleanSource,
+  extractMermaid,
+  fitImage,
+  hasKittyGraphics,
+  htmlPage,
+  narrowSource,
+  textArt,
+  wrapLabel,
+} from './register'
 
 const PANE = {
   title: 'Diagrams',
@@ -46,6 +55,43 @@ describe('helpers', () => {
     expect(art.lines.join('\n')).toContain('┌')
     expect(art.width).toBeGreaterThan(10)
     expect('error' in textArt('pie title X\n "a": 1')).toBe(true)
+  })
+
+  test('wrapLabel breaks on words', async () => {
+    expect(wrapLabel('initialize (protocolVersion, capabilities)')).toBe('initialize<br/>(protocolVersion,<br/>capabilities)')
+    expect(wrapLabel('short')).toBe('short')
+  })
+
+  test('narrowSource wraps long sequence labels and keeps the rest', async () => {
+    const source = [
+      'sequenceDiagram',
+      '    participant H as Host App (e.g. Claude Code)',
+      '    participant S as Server',
+      '    H->>S: create Job: pinned runtime image + sidecars',
+      '    S-->>H: ok',
+      '    Note over H,S: everything here happens in one cluster',
+    ].join('\n')
+    const narrow = narrowSource(source).split('\n')
+    expect(narrow[1]).toBe('    participant H as Host App (e.g.<br/>Claude Code)')
+    expect(narrow[2]).toBe('    participant S as Server')
+    expect(narrow[3]).toBe('    H->>S: create Job:<br/>pinned runtime<br/>image + sidecars')
+    expect(narrow[4]).toBe('    S-->>H: ok')
+    expect(narrow[5]).toBe('    Note over H,S: everything here happens in one cluster')
+  })
+
+  test('a wrapped sequence diagram fits a narrow pane', async () => {
+    const art = textArt(
+      'sequenceDiagram\n  participant C as MCP Client\n  participant S as MCP Server\n  C->>S: initialize (protocolVersion, capabilities)',
+    )
+    if (!('lines' in art)) throw new Error(art.error)
+    expect(art.width).toBeLessThanOrEqual(60)
+  })
+
+  test('narrowSource wraps flowchart box and edge labels', async () => {
+    const narrow = narrowSource('flowchart LR\n  A[Jira Automation webhook] -->|ticket needs a plan| B[Queue]')
+    expect(narrow).toContain('[Jira Automation<br/>webhook]')
+    expect(narrow).toContain('|ticket needs a<br/>plan|')
+    expect(narrow).toContain('B[Queue]')
   })
 
   test('a long prose line before a block is not its title', async () => {
