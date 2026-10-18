@@ -30,4 +30,4 @@ In the desktop app, where `/plugin` does not run: click **+** next to the prompt
 ## Notes
 
 - `mermaid-pane` renders with `npx @mermaid-js/mermaid-cli` (Node.js required; the first render downloads it) and writes diagrams to `~/.claude/mermaid-diagrams/`. Image sizing (`sips`) and "open in browser" (`open`) use macOS commands; on other systems the pane still shows the diagram source.
-- Inline images need a terminal that can draw them (e.g. iTerm2, Kitty, Ghostty, WezTerm).
+- Terminals with the kitty graphics protocol (kitty, Ghostty) show the full-resolution picture. Other truecolor terminals (Warp, iTerm2, WezTerm, Terminal.app, …) show it drawn in colored block characters: the shape, boxes and arrows come through, small labels do not, so press `o` to read it in the browser.

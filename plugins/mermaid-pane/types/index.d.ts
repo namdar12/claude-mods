@@ -4,6 +4,7 @@ export type Diagram = {
   source: string
   htmlPath: string
   pngPath?: string
+  bmpPath?: string
   width?: number
   height?: number
   error?: string
