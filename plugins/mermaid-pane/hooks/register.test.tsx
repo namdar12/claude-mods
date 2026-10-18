@@ -237,6 +237,16 @@ describe('pane', () => {
     await ui.unmount()
   })
 
+  test('the text view is dark ink on white paper', async ($, on) => {
+    host(on, [])
+    await $.tool.call(draw('Paper'))
+    const ui = await mount($, 'terminal')
+    const line = await ui.find({ type: 'Text', text: /┌/ })
+    expect(line?.props.backgroundColor).toBe('#ffffff')
+    expect(line?.props.color).toBe('#1f2328')
+    await ui.unmount()
+  })
+
   test('a diagram wider than the pane is fitted, then cut with a hint, never panned', async ($, on) => {
     host(on, [])
     const wide = Array.from({ length: 8 }, (_, i) => `N${i}[Node number ${i}]`).join(' --> ')

@@ -17,6 +17,10 @@ const LABEL_WIDTH = 16
 // Tighter label wraps tried in turn until the diagram fits the pane.
 const FIT_WIDTHS = [24, 16, 12]
 const DOCK_MIN = 44
+// The text view's paper: dark ink on white, a cell of margin each side.
+const PAPER = '#ffffff'
+const INK = '#1f2328'
+const MARGIN = 1
 const DOCK_MAX = 80
 const INLINE_ROWS = 30
 
@@ -138,7 +142,7 @@ export const fitArt = (draw: (labelWidth: number) => TextArt, columns: number) =
   return narrowest!
 }
 
-const artOf = (diagram: Diagram, columns = DOCK_MAX) =>
+const artOf = (diagram: Diagram, columns = DOCK_MAX - MARGIN * 2) =>
   fitArt(labelWidth => artFor(diagram, labelWidth), columns)
 
 export const hasKittyGraphics = (env: string) => {
@@ -269,7 +273,7 @@ const render = async ($: EngineInterface, title: string, source: string): Promis
 
 // The dock as wide as the diagram's text needs, within a sidebar's bounds.
 export const dockColumns = (art: TextArt | undefined) =>
-  art && 'lines' in art ? Math.min(DOCK_MAX, Math.max(DOCK_MIN, art.width + 2)) : DOCK_MAX
+  art && 'lines' in art ? Math.min(DOCK_MAX, Math.max(DOCK_MIN, art.width + MARGIN * 2 + 2)) : DOCK_MAX
 
 const openPane = ($: EngineInterface, focus = false, diagram?: Diagram) =>
   $.ui.open({
@@ -423,9 +427,9 @@ export const register: Register = on => {
     const isImage = e.surface === 'terminal' && !!current.pngPath && (await canDrawImages($))
     const art =
       e.surface === 'terminal' && !isSource && !current.error && !isImage
-        ? artOf(current, columns)
+        ? artOf(current, columns - MARGIN * 2)
         : undefined
-    const isCut = !!art && 'lines' in art && art.width > columns
+    const isCut = !!art && 'lines' in art && art.width > columns - MARGIN * 2
     const widen = e.props.placement === 'dock' ? 'ctrl+x ← widens the pane' : 'a wider terminal shows more'
     const hint = e.props.isFocused ? (
       <Text dimColor wrap="wrap">
@@ -503,11 +507,13 @@ export const register: Register = on => {
               Cut at the right edge: {widen}, or o opens it in the browser.
             </Text>
           ) : null}
-          {art.lines.map((line, i) => (
-            <Text key={`l${i}`} wrap="truncate-end">
-              {line || ' '}
-            </Text>
-          ))}
+          <Box flexDirection="column" backgroundColor={PAPER} paddingX={MARGIN}>
+            {art.lines.map((line, i) => (
+              <Text key={`l${i}`} wrap="truncate-end" color={INK} backgroundColor={PAPER}>
+                {line.padEnd(Math.min(art.width, columns - MARGIN * 2), ' ')}
+              </Text>
+            ))}
+          </Box>
         </Box>
       )
     } else {
