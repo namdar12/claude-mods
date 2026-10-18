@@ -30,4 +30,5 @@ In the desktop app, where `/plugin` does not run: click **+** next to the prompt
 ## Notes
 
 - `mermaid-pane` renders with `npx @mermaid-js/mermaid-cli` (Node.js required; the first render downloads it) and writes diagrams to `~/.claude/mermaid-diagrams/`. Image sizing (`sips`) and "open in browser" (`open`) use macOS commands; on other systems the pane still shows the diagram source.
-- Inline images need a terminal that can draw them (e.g. iTerm2, Kitty, Ghostty, WezTerm).
+- kitty and Ghostty show the rendered picture (the kitty graphics protocol). Every other terminal (Warp, iTerm2, WezTerm, Terminal.app, …) gets the diagram drawn in box-drawing characters, panned with `h`/`l` when it is wider than the pane. Flowcharts, sequence, state, class and ER diagrams draw as text; other types show their source. `o` always opens the full picture in the browser.
+- The text renderer is [beautiful-mermaid](https://www.npmjs.com/package/beautiful-mermaid) (MIT), vendored in `plugins/mermaid-pane/hooks/vendor/`.

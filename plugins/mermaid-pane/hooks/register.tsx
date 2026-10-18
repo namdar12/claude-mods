@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Diagram } from '../types'
+import { renderMermaidASCII } from './vendor/beautiful-mermaid-ascii.js'
 
 const PANE = 'mermaid'
 const TOOL = 'mcp__mermaid-pane__show_diagram'
@@ -11,8 +12,58 @@ const FENCE = /```mermaid[^\n]*\n([\s\S]*?)```/g
 const diagrams = atom({ plugin: 'mermaid-pane', key: 'diagrams' } as const, [] as Diagram[])
 const index = atom({ plugin: 'mermaid-pane', key: 'index' } as const, 0)
 const showSource = atom({ plugin: 'mermaid-pane', key: 'showSource' } as const, false)
+const pan = atom({ plugin: 'mermaid-pane', key: 'pan' } as const, 0)
+
+const PAN_STEP = 20
 
 const pending = new Set<string>()
+const artCache = new Map<string, TextArt>()
+
+type TextArt = { lines: string[]; width: number } | { error: string }
+
+// The diagram drawn in box-drawing characters, for terminals that cannot show the PNG.
+export const textArt = (source: string): TextArt => {
+  try {
+    const lines = renderMermaidASCII(source, { colorMode: 'none' })
+      .split('\n')
+      .map(line => line.trimEnd())
+    while (lines.length && !lines.at(-1)) lines.pop()
+    if (!lines.length) return { error: 'the renderer drew nothing' }
+
+    return { lines, width: Math.max(...lines.map(line => Array.from(line).length)) }
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+const artOf = (diagram: Diagram) => {
+  let art = artCache.get(diagram.id)
+  if (!art) {
+    art = textArt(diagram.source)
+    artCache.set(diagram.id, art)
+    if (artCache.size > 50) artCache.delete(artCache.keys().next().value!)
+  }
+
+  return art
+}
+
+export const hasKittyGraphics = (env: string) => {
+  const [program = '', term = '', kittyWindow = ''] = env.split('|')
+
+  return /ghostty/i.test(program) || /kitty/i.test(term) || kittyWindow.trim() !== ''
+}
+
+let kittyPromise: Promise<boolean> | undefined
+
+// The engine's Image draws only through the kitty graphics protocol (kitty, Ghostty).
+const canDrawImages = ($: EngineInterface) => {
+  kittyPromise ??= $.process
+    .run(['sh', '-c', 'printf "%s|%s|%s" "$TERM_PROGRAM" "$TERM" "$KITTY_WINDOW_ID"'])
+    .then(({ stdout }) => hasKittyGraphics(stdout))
+    .catch(() => false)
+
+  return kittyPromise
+}
 
 const escapeHtml = (text: string) =>
   text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
@@ -65,7 +116,8 @@ export const extractMermaid = (text: string) => {
       .map(line => line.trim())
       .filter(Boolean)
     const label = before.at(-1) ?? ''
-    const isLabel = /^(#{1,6}\s|\*\*)/.test(label) || label.endsWith(':')
+    const isLabel =
+      /^(#{1,6}\s|\*\*)/.test(label) || (label.endsWith(':') && label.length <= 60)
     const heading = isLabel
       ? label
           .replace(/^#{1,6}\s+/, '')
@@ -131,6 +183,7 @@ const addDiagram = async ($: EngineInterface, title: string, source: string) => 
     const list = await update($, diagrams, all => [...all, diagram].slice(-50))
     await update($, index, () => list.length - 1)
     await update($, showSource, () => false)
+    await update($, pan, () => 0)
     const opened = await openPane($)
 
     return { diagram, count: list.length, isPlaced: opened.isPlaced }
@@ -159,6 +212,7 @@ const responseText = (content: readonly { type: string; [field: string]: unknown
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    void canDrawImages($)
     await $.command.register({
       name: 'diagrams',
       description: 'Open the Mermaid diagrams pane (close it with its x; reopen any time)',
@@ -247,16 +301,6 @@ export const register: Register = on => {
     const isSource = await read($, showSource)
     const columns = e.props.bodyColumns
     const bodyRows = e.props.scroll?.bodyRows ?? (e.viewport?.rows ?? 30) - 2
-    const hint = e.props.isFocused ? (
-      <Text dimColor wrap="wrap">
-        n next · p prev · s source · o open in browser · c copy · Esc back to the prompt
-      </Text>
-    ) : (
-      <Text dimColor wrap="wrap">
-        Press ctrl+x tab to give this pane the keys (n next · p prev · o open in browser)
-      </Text>
-    )
-
     if (list.length === 0) {
       return (
         <Box flexDirection="column">
@@ -269,13 +313,35 @@ export const register: Register = on => {
     }
 
     const current = list[at]!
-    const go = (delta: number) =>
-      update($, index, i => Math.min(list.length - 1, Math.max(0, i + delta)))
+    const go = async (delta: number) => {
+      await update($, index, i => Math.min(list.length - 1, Math.max(0, i + delta)))
+      await update($, pan, () => 0)
+    }
+
+    const isImage = e.surface === 'terminal' && !!current.pngPath && (await canDrawImages($))
+    const art =
+      e.surface === 'terminal' && !isSource && !current.error && !isImage ? artOf(current) : undefined
+    const wide = art && 'lines' in art && art.width > columns ? art : undefined
+    const maxPan = wide ? wide.width - columns : 0
+    const shift = Math.min(Math.max(0, await read($, pan)), maxPan)
+    const panBy = (delta: number) => update($, pan, p => Math.min(maxPan, Math.max(0, p + delta)))
+    const hint = e.props.isFocused ? (
+      <Text dimColor wrap="wrap">
+        n next · p prev{wide ? ' · h/l pan' : ''} · s source · o open in browser · c copy · Esc back to the prompt
+      </Text>
+    ) : (
+      <Text dimColor wrap="wrap">
+        Press ctrl+x tab to give this pane the keys (n next · p prev · o open in browser)
+      </Text>
+    )
+
 
     const controls = (
       <Box flexDirection="row" gap={1} flexWrap="wrap">
         <Button key="prev" label="◀ prev" hotkey="p" onPress={() => go(-1)} />
         <Button key="next" label="next ▶" hotkey="n" onPress={() => go(1)} />
+        {wide ? <Button key="left" label="← pan" hotkey="h" onPress={() => panBy(-PAN_STEP)} /> : null}
+        {wide ? <Button key="right" label="pan →" hotkey="l" onPress={() => panBy(PAN_STEP)} /> : null}
         <Button
           key="source"
           label={isSource ? 'diagram' : 'source'}
@@ -317,19 +383,43 @@ export const register: Register = on => {
           <Code source={current.source} language="mermaid" startLine={1} />
         </Box>
       )
-    } else if (isSource || !current.pngPath || e.surface !== 'terminal') {
-      body = <Code source={current.source} language="mermaid" startLine={1} />
-    } else {
+    } else if (isImage && !isSource) {
       const { Image } = $.ui.resolve(e)
       const fit = fitImage(current.width, current.height, columns, Math.max(4, bodyRows - 7))
       body = (
         <Image
           key={current.id}
-          source={{ file: current.pngPath, format: 'png' }}
+          source={{ file: current.pngPath!, format: 'png' }}
           columns={fit.columns}
           rows={fit.rows}
-          alt={`[${current.title}] This terminal can't draw images inline: press o to open it in the browser, s for source.`}
+          alt={`[${current.title}] press o to open it in the browser, s for source.`}
         />
+      )
+    } else if (art && 'lines' in art) {
+      body = (
+        <Box key={`art-${current.id}`} flexDirection="column">
+          {wide ? (
+            <Text dimColor>
+              columns {shift + 1}–{Math.min(wide.width, shift + columns)} of {wide.width} · h/l to pan
+            </Text>
+          ) : null}
+          {art.lines.map((line, i) => (
+            <Text key={`l${i}`} wrap="truncate-end">
+              {Array.from(line).slice(shift, shift + columns).join('') || ' '}
+            </Text>
+          ))}
+        </Box>
+      )
+    } else {
+      body = (
+        <Box flexDirection="column">
+          {art && 'error' in art ? (
+            <Text dimColor wrap="wrap">
+              Can't draw this one as text ({art.error.split('\n')[0]}). Press o for the picture.
+            </Text>
+          ) : null}
+          <Code source={current.source} language="mermaid" startLine={1} />
+        </Box>
       )
     }
 

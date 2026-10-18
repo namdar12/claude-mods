@@ -2,7 +2,7 @@ import type { On } from 'claude-code'
 import type { Engine } from 'claude-code/testing'
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { cleanSource, extractMermaid, fitImage, htmlPage } from './register'
+import { cleanSource, extractMermaid, fitImage, hasKittyGraphics, htmlPage, textArt } from './register'
 
 const PANE = {
   title: 'Diagrams',
@@ -29,6 +29,31 @@ describe('helpers', () => {
 
   test('cleanSource strips fences', async () => {
     expect(cleanSource('```mermaid\nflowchart LR\n  A --> B\n```')).toBe('flowchart LR\n  A --> B')
+  })
+
+  test('hasKittyGraphics knows kitty and Ghostty, not Warp', async () => {
+    expect(hasKittyGraphics(GHOSTTY)).toBe(true)
+    expect(hasKittyGraphics('|xterm-kitty|')).toBe(true)
+    expect(hasKittyGraphics('|xterm-256color|1')).toBe(true)
+    expect(hasKittyGraphics(WARP)).toBe(false)
+    expect(hasKittyGraphics('iTerm.app|xterm-256color|')).toBe(false)
+  })
+
+  test('textArt draws boxes and labels, and reports what it cannot draw', async () => {
+    const art = textArt('flowchart LR\n  A[Client] --> B[Server]')
+    if (!('lines' in art)) throw new Error(art.error)
+    expect(art.lines.join('\n')).toContain('Client')
+    expect(art.lines.join('\n')).toContain('┌')
+    expect(art.width).toBeGreaterThan(10)
+    expect('error' in textArt('pie title X\n "a": 1')).toBe(true)
+  })
+
+  test('a long prose line before a block is not its title', async () => {
+    const prose = "Here's a sequence diagram of a full MCP tool call, from connecting to the server through to the end:"
+    const [found] = extractMermaid(`${prose}\n\n\`\`\`mermaid\nsequenceDiagram\n  A->>B: hi\n\`\`\``)
+    expect(found!.title).toBe('sequenceDiagram')
+    const [short] = extractMermaid('The flow:\n```mermaid\nflowchart LR\n  A-->B\n```')
+    expect(short!.title).toBe('The flow')
   })
 
   test('extractMermaid finds each fenced block and titles it', async () => {
@@ -59,9 +84,13 @@ const ran = (stdout: string) => ({
   value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
 })
 
-const host = (on: On, renders: string[], opens: unknown[] = []) => {
+const WARP = 'WarpTerminal|xterm-256color|'
+const GHOSTTY = 'ghostty|xterm-ghostty|'
+
+const host = (on: On, renders: string[], opens: unknown[] = [], env = WARP) => {
   on('process.run', ($, e) => {
     if (e.argv[0] === 'printenv') return ran('/Users/me\n')
+    if (e.argv[0] === 'sh') return ran(env)
     if (e.argv[0] === 'sips') return ran('pixelWidth: 1000\npixelHeight: 250\n')
     renders.push(e.argv.join(' '))
     return ran('')
@@ -100,7 +129,7 @@ describe('pane', () => {
 
   test('a tool call renders, pages and toggles source', async ($, on) => {
     const renders: string[] = []
-    host(on, renders)
+    host(on, renders, [], GHOSTTY)
     const first = await $.tool.call(draw('First'))
     expect(String(first.result)).toContain('Rendered "First"')
     await $.tool.call(draw('Second'))
@@ -116,6 +145,29 @@ describe('pane', () => {
 
     await ui.press({ key: 'source' })
     expect(await ui.find({ type: 'Code' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('Warp gets the diagram as text, not an image', async ($, on) => {
+    host(on, [])
+    await $.tool.call(draw('Text'))
+    const ui = await mount($, 'terminal')
+    expect(await ui.find({ type: 'Image' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /Client|A/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /┌/ })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test('a diagram wider than the pane pans', async ($, on) => {
+    host(on, [])
+    const wide = Array.from({ length: 8 }, (_, i) => `N${i}[Node number ${i}]`).join(' --> ')
+    await $.tool.call({ ...draw('Wide'), mermaid: `flowchart LR\n  ${wide}` })
+    const ui = await mount($, 'terminal')
+    expect(await ui.find({ type: 'Text', text: /columns 1–60 of/ })).toBeDefined()
+    await ui.press({ key: 'right' })
+    expect(await ui.find({ type: 'Text', text: /columns 21–80 of/ })).toBeDefined()
+    await ui.press({ key: 'left' })
+    expect(await ui.find({ type: 'Text', text: /columns 1–60 of/ })).toBeDefined()
     await ui.unmount()
   })
 

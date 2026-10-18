@@ -16,6 +16,7 @@ declare module 'claude-code' {
       diagrams: Diagram[]
       index: number
       showSource: boolean
+      pan: number
     }
   }
 }
