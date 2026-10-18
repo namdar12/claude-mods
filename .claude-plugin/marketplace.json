@@ -3,7 +3,7 @@
   "owner": {
     "name": "namdar12"
   },
-  "description": "Claude Code mods by namdar12: a Mermaid diagrams pane and a Claude Certified Architect practice quiz.",
+  "description": "Claude Code mods by namdar12: a Mermaid diagrams pane, a Claude Certified Architect practice quiz, and /park-all for upgrading with every session saved.",
   "plugins": [
     {
       "name": "mermaid-pane",
@@ -14,6 +14,11 @@
       "name": "cca-quiz",
       "source": "./plugins/cca-quiz",
       "description": "Multiple-choice practice for the Claude Certified Architect exams, shown above the prompt while Claude works. Toggle with /quiz."
+    },
+    {
+      "name": "session-park",
+      "source": "./plugins/session-park",
+      "description": "/park-all closes every Claude Code terminal session for an upgrade; /unpark-all reopens them resumed"
     }
   ]
 }

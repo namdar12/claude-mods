@@ -1,0 +1,9 @@
+{
+  "name": "session-park",
+  "version": "0.1.0",
+  "description": "/park-all closes every Claude Code terminal session for an upgrade; /unpark-all reopens them resumed",
+  "author": {
+    "name": "namdar12",
+    "url": "https://github.com/namdar12"
+  }
+}
