@@ -12,17 +12,25 @@ const FENCE = /```mermaid[^\n]*\n([\s\S]*?)```/g
 const diagrams = atom({ plugin: 'mermaid-pane', key: 'diagrams' } as const, [] as Diagram[])
 const index = atom({ plugin: 'mermaid-pane', key: 'index' } as const, 0)
 const showSource = atom({ plugin: 'mermaid-pane', key: 'showSource' } as const, false)
-const pan = atom({ plugin: 'mermaid-pane', key: 'pan' } as const, 0)
 
-const PAN_STEP = 20
 const LABEL_WIDTH = 16
+// Tighter label wraps tried in turn until the diagram fits the pane.
+const FIT_WIDTHS = [24, 16, 12]
 const DOCK_MIN = 44
-const DOCK_MAX = 72
+const DOCK_MAX = 80
 const INLINE_ROWS = 30
+
+// A word longer than `width` split after its / _ . - marks; a word without them stays whole.
+export const splitWord = (word: string, width: number): string[] =>
+  word.length <= width ? [word] : word.split(/(?<=[/_.\-])/).filter(Boolean)
 
 // Breaks a label into lines of about `width` characters, joined by <br/>.
 export const wrapLabel = (text: string, width = LABEL_WIDTH) => {
-  const words = text.replace(/<br\s*\/?>/gi, ' ').trim().split(/\s+/)
+  const words = text
+    .replace(/<br\s*\/?>/gi, ' ')
+    .trim()
+    .split(/\s+/)
+    .flatMap(word => splitWord(word, width))
   const lines: string[] = []
   let line = ''
   for (const word of words) {
@@ -48,8 +56,12 @@ export const narrowSource = (source: string, width = LABEL_WIDTH) => {
     .split('\n')
     .map(line => {
       if (isSequence) {
-        const message = line.match(/^(\s*[^:]*?(?:->>|-->>|->|-->|-x|--x|-\)|--\))[+-]?[^:]*?:)(.*)$/)
-        if (message && long(message[2]!)) return `${message[1]} ${wrapLabel(message[2]!, width)}`
+        const message = line.match(
+          /^(\s*([^:\s]+?)\s*(?:->>|-->>|->|-->|-x|--x|-\)|--\))[+-]?\s*([^:\s]+?)\s*:)(.*)$/,
+        )
+        // A message to itself draws wrong wrapped.
+        const isSelf = message && message[2] === message[3]
+        if (message && !isSelf && long(message[4]!)) return `${message[1]} ${wrapLabel(message[4]!, width)}`
         const actor = line.match(/^(\s*(?:participant|actor)\s+\S+\s+as\s+)(.*)$/)
         if (actor && long(actor[2]!)) return `${actor[1]}${wrapLabel(actor[2]!, width)}`
 
@@ -68,12 +80,30 @@ const artCache = new Map<string, TextArt>()
 
 type TextArt = { lines: string[]; width: number } | { error: string }
 
-// The diagram drawn in box-drawing characters, for terminals that cannot show the PNG.
-export const textArt = (source: string): TextArt => {
+const isBlankRow = (line: string) => /^[\s│]*$/.test(line)
+
+// Fewer rows without losing an arrow or a label: a sequence diagram drops its rows of
+// bare lifelines; a flowchart, whose bare rows are its edges, only a repeat of the row above.
+export const collapseRows = (lines: string[], isSequence = false) =>
+  lines.filter((line, i) =>
+    isSequence ? !isBlankRow(line) : i === 0 || !isBlankRow(line) || line !== lines[i - 1],
+  )
+
+// The diagram drawn in box-drawing characters, for terminals that cannot show the PNG:
+// boxes without inner padding and repeated blank rows dropped, to fit more in view.
+export const textArt = (source: string, labelWidth = LABEL_WIDTH): TextArt => {
   try {
-    const lines = renderMermaidASCII(narrowSource(source), { colorMode: 'none' })
-      .split('\n')
-      .map(line => line.trimEnd())
+    const drawn = renderMermaidASCII(narrowSource(source, labelWidth), {
+      colorMode: 'none',
+      paddingX: 2,
+      paddingY: 1,
+      boxBorderPadding: 0,
+    })
+    const isSequence = /^\s*sequenceDiagram\b/.test(source)
+    const lines = collapseRows(
+      drawn.split('\n').map(line => line.trimEnd()),
+      isSequence,
+    )
     while (lines.length && !lines.at(-1)) lines.pop()
     if (!lines.length) return { error: 'the renderer drew nothing' }
 
@@ -83,16 +113,33 @@ export const textArt = (source: string): TextArt => {
   }
 }
 
-const artOf = (diagram: Diagram) => {
-  let art = artCache.get(diagram.id)
+const artFor = (diagram: Diagram, labelWidth: number) => {
+  const key = `${diagram.id}:${labelWidth}`
+  let art = artCache.get(key)
   if (!art) {
-    art = textArt(diagram.source)
-    artCache.set(diagram.id, art)
-    if (artCache.size > 50) artCache.delete(artCache.keys().next().value!)
+    art = textArt(diagram.source, labelWidth)
+    artCache.set(key, art)
+    if (artCache.size > 200) artCache.delete(artCache.keys().next().value!)
   }
 
   return art
 }
+
+// The widest-label drawing that fits `columns`, else the narrowest one there is.
+export const fitArt = (draw: (labelWidth: number) => TextArt, columns: number) => {
+  let narrowest: TextArt | undefined
+  for (const labelWidth of FIT_WIDTHS) {
+    const art = draw(labelWidth)
+    if (!('lines' in art)) return art
+    if (art.width <= columns) return art
+    if (!narrowest || ('lines' in narrowest && art.width < narrowest.width)) narrowest = art
+  }
+
+  return narrowest!
+}
+
+const artOf = (diagram: Diagram, columns = DOCK_MAX) =>
+  fitArt(labelWidth => artFor(diagram, labelWidth), columns)
 
 export const hasKittyGraphics = (env: string) => {
   const [program = '', term = '', kittyWindow = ''] = env.split('|')
@@ -240,7 +287,6 @@ const addDiagram = async ($: EngineInterface, title: string, source: string) => 
     const list = await update($, diagrams, all => [...all, diagram].slice(-50))
     await update($, index, () => list.length - 1)
     await update($, showSource, () => false)
-    await update($, pan, () => 0)
     const opened = await openPane($, false, diagram)
 
     return { diagram, count: list.length, isPlaced: opened.isPlaced }
@@ -372,19 +418,18 @@ export const register: Register = on => {
     const current = list[at]!
     const go = async (delta: number) => {
       await update($, index, i => Math.min(list.length - 1, Math.max(0, i + delta)))
-      await update($, pan, () => 0)
     }
 
     const isImage = e.surface === 'terminal' && !!current.pngPath && (await canDrawImages($))
     const art =
-      e.surface === 'terminal' && !isSource && !current.error && !isImage ? artOf(current) : undefined
-    const wide = art && 'lines' in art && art.width > columns ? art : undefined
-    const maxPan = wide ? wide.width - columns : 0
-    const shift = Math.min(Math.max(0, await read($, pan)), maxPan)
-    const panBy = (delta: number) => update($, pan, p => Math.min(maxPan, Math.max(0, p + delta)))
+      e.surface === 'terminal' && !isSource && !current.error && !isImage
+        ? artOf(current, columns)
+        : undefined
+    const isCut = !!art && 'lines' in art && art.width > columns
+    const widen = e.props.placement === 'dock' ? 'ctrl+x ← widens the pane' : 'a wider terminal shows more'
     const hint = e.props.isFocused ? (
       <Text dimColor wrap="wrap">
-        n next · p prev{wide ? ' · h/l pan' : ''} · s source · o open in browser · c copy · Esc back to the prompt
+        n next · p prev · s source · o open in browser · c copy · Esc back to the prompt
       </Text>
     ) : (
       <Text dimColor wrap="wrap">
@@ -397,8 +442,6 @@ export const register: Register = on => {
       <Box flexDirection="row" gap={1} flexWrap="wrap">
         <Button key="prev" label="◀ prev" hotkey="p" onPress={() => go(-1)} />
         <Button key="next" label="next ▶" hotkey="n" onPress={() => go(1)} />
-        {wide ? <Button key="left" label="← pan" hotkey="h" onPress={() => panBy(-PAN_STEP)} /> : null}
-        {wide ? <Button key="right" label="pan →" hotkey="l" onPress={() => panBy(PAN_STEP)} /> : null}
         <Button
           key="source"
           label={isSource ? 'diagram' : 'source'}
@@ -455,14 +498,14 @@ export const register: Register = on => {
     } else if (art && 'lines' in art) {
       body = (
         <Box key={`art-${current.id}`} flexDirection="column">
-          {wide ? (
-            <Text dimColor>
-              columns {shift + 1}–{Math.min(wide.width, shift + columns)} of {wide.width} · h/l to pan
+          {isCut ? (
+            <Text dimColor wrap="wrap">
+              Cut at the right edge: {widen}, or o opens it in the browser.
             </Text>
           ) : null}
           {art.lines.map((line, i) => (
             <Text key={`l${i}`} wrap="truncate-end">
-              {Array.from(line).slice(shift, shift + columns).join('') || ' '}
+              {line || ' '}
             </Text>
           ))}
         </Box>

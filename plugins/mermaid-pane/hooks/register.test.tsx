@@ -4,6 +4,9 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import {
   cleanSource,
+  collapseRows,
+  fitArt,
+  splitWord,
   extractMermaid,
   fitImage,
   hasKittyGraphics,
@@ -92,6 +95,36 @@ describe('helpers', () => {
     expect(narrow).toContain('[Jira Automation<br/>webhook]')
     expect(narrow).toContain('|ticket needs a<br/>plan|')
     expect(narrow).toContain('B[Queue]')
+  })
+
+  test('splitWord breaks only at / _ . - marks', async () => {
+    expect(splitWord('notifications/initialized', 12)).toEqual(['notifications/', 'initialized'])
+    expect(splitWord('capabilities', 8)).toEqual(['capabilities'])
+    expect(splitWord('short', 12)).toEqual(['short'])
+  })
+
+  test('collapseRows packs sequence lifelines but keeps flowchart edges', async () => {
+    const rows = ['┌─┐', '│ │', '│ │', '──▶', '│ │']
+    expect(collapseRows(rows, true)).toEqual(['┌─┐', '──▶'])
+    expect(collapseRows(rows)).toEqual(['┌─┐', '│ │', '──▶', '│ │'])
+  })
+
+  test('a message to itself is not wrapped', async () => {
+    const source = 'sequenceDiagram\n  H->>H: permission check before running\n  H->>S: permission check before running'
+    const [, self, other] = narrowSource(source).split('\n')
+    expect(self).toBe('  H->>H: permission check before running')
+    expect(other).toContain('<br/>')
+  })
+
+  test('fitArt takes the widest labels that fit, else the narrowest drawing', async () => {
+    const draws: number[] = []
+    const draw = (labelWidth: number) => {
+      draws.push(labelWidth)
+      return { lines: ['x'], width: labelWidth * 5 }
+    }
+    expect(fitArt(draw, 90)).toEqual({ lines: ['x'], width: 80 })
+    expect(fitArt(draw, 10)).toEqual({ lines: ['x'], width: 60 })
+    expect(fitArt(() => ({ error: 'no' }), 10)).toEqual({ error: 'no' })
   })
 
   test('a long prose line before a block is not its title', async () => {
@@ -204,16 +237,13 @@ describe('pane', () => {
     await ui.unmount()
   })
 
-  test('a diagram wider than the pane pans', async ($, on) => {
+  test('a diagram wider than the pane is fitted, then cut with a hint, never panned', async ($, on) => {
     host(on, [])
     const wide = Array.from({ length: 8 }, (_, i) => `N${i}[Node number ${i}]`).join(' --> ')
     await $.tool.call({ ...draw('Wide'), mermaid: `flowchart LR\n  ${wide}` })
     const ui = await mount($, 'terminal')
-    expect(await ui.find({ type: 'Text', text: /columns 1–60 of/ })).toBeDefined()
-    await ui.press({ key: 'right' })
-    expect(await ui.find({ type: 'Text', text: /columns 21–80 of/ })).toBeDefined()
-    await ui.press({ key: 'left' })
-    expect(await ui.find({ type: 'Text', text: /columns 1–60 of/ })).toBeDefined()
+    expect(await ui.find({ key: 'right' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /Cut at the right edge: ctrl\+x ← widens the pane/ })).toBeDefined()
     await ui.unmount()
   })
 
