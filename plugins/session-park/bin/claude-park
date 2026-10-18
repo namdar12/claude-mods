@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""Park every open Claude Code terminal session, then bring them all back.
+
+  claude-park park [--force] [--self SESSION_ID]   save the list, close them
+  claude-park restore                                reopen each one, resumed
+  claude-park list                                   show what is parked
+
+Typical upgrade:  /park-all  (or `claude-park park`)  ->  claude update  ->  claude-park restore
+
+Sessions are read from ~/.claude/sessions/<pid>.json, which every running
+Claude Code process keeps. Only interactive terminal sessions are parked;
+IDE (VS Code) and background sessions are left alone. Restore opens one Warp
+tab per session (via Warp tab configs) running `claude --resume <id>` in its original directory
+(Terminal.app windows when Warp is not installed).
+"""
+
+import json
+import os
+import shlex
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+HOME = Path.home()
+SESSIONS_DIR = HOME / ".claude" / "sessions"
+PARKED_FILE = HOME / ".claude" / "parked-sessions.json"
+WARP_DIR = HOME / ".warp" / "launch_configurations"
+WARP_CONFIG = WARP_DIR / "claude-parked.yaml"
+WARP_TABS = HOME / ".warp" / "tab_configs"
+
+
+def is_claude(pid):
+    out = subprocess.run(["ps", "-p", str(pid), "-o", "comm="], capture_output=True, text=True).stdout
+    return "claude" in out
+
+
+def live_sessions():
+    found = []
+    for path in sorted(SESSIONS_DIR.glob("*.json")):
+        try:
+            info = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        pid = info.get("pid")
+        if not pid or not info.get("sessionId") or not is_claude(pid):
+            continue
+        found.append(info)
+    return found
+
+
+def park(args):
+    force = "--force" in args
+    self_id = args[args.index("--self") + 1] if "--self" in args else None
+
+    sessions = live_sessions()
+    parkable = [s for s in sessions if s.get("kind") == "interactive" and s.get("entrypoint") == "cli"]
+    skipped = [s for s in sessions if s not in parkable and s.get("kind") == "interactive"]
+    if not parkable:
+        print("No open Claude Code terminal sessions to park.")
+        return 0
+
+    busy = [s for s in parkable if s.get("status") == "busy" and s["sessionId"] != self_id]
+    if busy and not force:
+        print("These sessions are mid-turn; let them finish, or park with --force (their current turn is lost):")
+        for s in busy:
+            print(f"  {s.get('name') or s['sessionId']}  ({s.get('cwd')})")
+        return 1
+
+    parked = [
+        {"sessionId": s["sessionId"], "cwd": s.get("cwd") or str(HOME), "name": s.get("name") or "", "pid": s["pid"]}
+        for s in parkable
+    ]
+    PARKED_FILE.write_text(json.dumps({"parkedAt": int(time.time()), "sessions": parked}, indent=2))
+    write_warp_config(parked)
+
+    print(f"Parked {len(parked)} session(s) to {PARKED_FILE}:")
+    for s in parked:
+        print(f"  {s['name'] or s['sessionId']}  ({s['cwd']})")
+    for s in skipped:
+        print(f"  left open (not a terminal session): {s.get('name') or s['sessionId']} [{s.get('entrypoint')}]")
+
+    self_pid = None
+    for s in parked:
+        if s["sessionId"] == self_id:
+            self_pid = s["pid"]
+            continue
+        try:
+            os.kill(s["pid"], signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    if self_pid:
+        # Close the session that ran /park-all last, after its answer has shown.
+        subprocess.Popen(
+            ["/bin/sh", "-c", f"sleep 2; kill -TERM {self_pid}"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    print("\nNow upgrade (`claude update`), then run `claude-park restore`.")
+    return 0
+
+
+def write_warp_config(parked):
+    lines = ["---", "name: Claude parked sessions", "windows:", "  - tabs:"]
+    for s in parked:
+        title = s["name"] or s["sessionId"][:8]
+        lines += [
+            f"      - title: {json.dumps(title)}",
+            "        layout:",
+            f"          cwd: {json.dumps(s['cwd'])}",
+            "          commands:",
+            f"            - exec: {json.dumps('claude --resume ' + s['sessionId'])}",
+        ]
+    WARP_DIR.mkdir(parents=True, exist_ok=True)
+    WARP_CONFIG.write_text("\n".join(lines) + "\n")
+
+
+def open_warp_tabs(todo):
+    # One Warp tab config per session, opened by warp://tab_config/<stem>; the
+    # files are removed once Warp has read them so they don't clutter the + menu.
+    WARP_TABS.mkdir(parents=True, exist_ok=True)
+    for old in WARP_TABS.glob("claude-park-*.toml"):
+        old.unlink()
+    stems = []
+    for i, s in enumerate(todo):
+        stem = f"claude-park-{i}"
+        (WARP_TABS / f"{stem}.toml").write_text(
+            f"name = {json.dumps('Claude: ' + (s['name'] or s['sessionId'][:8]))}\n"
+            f"title = {json.dumps(s['name'] or s['sessionId'][:8])}\n\n"
+            "[[panes]]\n"
+            'id = "main"\n'
+            'type = "terminal"\n'
+            f"directory = {json.dumps(s['cwd'])}\n"
+            f"commands = [{json.dumps('claude --resume ' + s['sessionId'])}]\n"
+        )
+        stems.append(stem)
+    time.sleep(1.5)
+    for stem in stems:
+        subprocess.run(["open", f"warp://tab_config/{stem}"], check=True)
+        time.sleep(1.0)
+    subprocess.Popen(
+        ["/bin/sh", "-c", f"sleep 10; rm -f {shlex.quote(str(WARP_TABS))}/claude-park-*.toml"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+
+def load_parked():
+    if not PARKED_FILE.exists():
+        print("Nothing is parked.")
+        return None
+    return json.loads(PARKED_FILE.read_text())["sessions"]
+
+
+def restore(_args):
+    parked = load_parked()
+    if parked is None:
+        return 1
+    running = {s["sessionId"] for s in live_sessions()}
+    todo = [s for s in parked if s["sessionId"] not in running]
+    if not todo:
+        print("Every parked session is already open.")
+        return 0
+
+    if Path("/Applications/Warp.app").exists():
+        open_warp_tabs(todo)
+    else:
+        for s in todo:
+            cmd = f"cd {shlex.quote(s['cwd'])} && claude --resume {s['sessionId']}"
+            script = f'tell application "Terminal" to do script {json.dumps(cmd)}'
+            subprocess.run(["osascript", "-e", script], check=True)
+
+    print(f"Reopened {len(todo)} session(s):")
+    for s in todo:
+        print(f"  {s['name'] or s['sessionId']}  ({s['cwd']})")
+    return 0
+
+
+def show(_args):
+    parked = load_parked()
+    if parked is None:
+        return 1
+    for s in parked:
+        print(f"{s['sessionId']}  {s['name'] or '-'}  {s['cwd']}")
+        print(f"    cd {shlex.quote(s['cwd'])} && claude --resume {s['sessionId']}")
+    return 0
+
+
+def main():
+    cmd, args = (sys.argv[1], sys.argv[2:]) if len(sys.argv) > 1 else ("", [])
+    actions = {"park": park, "restore": restore, "list": show}
+    if cmd not in actions:
+        print(__doc__)
+        return 2
+    return actions[cmd](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
