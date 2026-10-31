@@ -7,7 +7,7 @@ Mods for [Claude Code](https://claude.com/claude-code), published as a plugin ma
 | [`mermaid-pane`](plugins/mermaid-pane) | Renders Mermaid diagrams into a side pane. Any ` ```mermaid ` block in Claude's reply opens there automatically, and Claude also gets a `show_diagram` tool. Page through them with `n`/`p`, view the source with `s`, open in the browser with `o`; reopen with `/diagrams`. |
 | [`cca-quiz`](plugins/cca-quiz) | Multiple-choice practice for the Claude Certified Architect exams, shown above the prompt while Claude works. Toggle with `/quiz` (`/quiz on`, `/quiz off`, `/quiz reset`); answer with `1`–`4`. |
 | [`session-park`](plugins/session-park) | `/park-all` saves and closes every open Claude Code terminal session (the one you ran it in last) so you can upgrade; `/unpark-all` reopens each one resumed in its original directory. `/park-all force` also closes sessions that are mid-turn. |
-| [`branch-band`](plugins/branch-band) | Shows the git branch above the prompt: the session's own repo first, then one line for every other repo or worktree the chat has touched (through `cd` / `git -C` in Bash, or a file it read or edited). Branches are re-checked after each turn, and a deleted worktree drops off. |
+| [`branch-band`](plugins/branch-band) | Shows the git branch above the prompt: the session's own repo first, then one line per repo the chat has touched (through `cd` / `git -C` in Bash, or a file it read or edited), listing each branch and worktree it worked in. The list belongs to the chat: it is saved per session, so a resumed chat gets it back and another chat's branches never show. |
 
 ## Install
 
