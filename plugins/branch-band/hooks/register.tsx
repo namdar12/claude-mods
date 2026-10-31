@@ -66,6 +66,16 @@ async function probe($: EngineInterface, dir?: string): Promise<BranchInfo> {
   }
 }
 
+function dirsFromTool(tool: string, input: Record<string, unknown>): string[] {
+  if (tool === 'Bash' && typeof input.command === 'string') {
+    return dirsFromCommand(input.command).reverse()
+  }
+  if ((tool === 'Read' || tool === 'Edit' || tool === 'Write') && typeof input.file_path === 'string') {
+    return input.file_path.startsWith('/') ? [dirname(input.file_path)] : []
+  }
+  return []
+}
+
 function upsert(list: RepoInfo[], repo: RepoInfo): RepoInfo[] {
   const at = list.findIndex(known => known.top === repo.top)
   if (at === -1) {
@@ -99,6 +109,25 @@ async function noteFile($: EngineInterface, path: string): Promise<void> {
   } catch {}
 }
 
+async function replayTranscript($: EngineInterface): Promise<void> {
+  const messages = await $.session.messages()
+  if (!Array.isArray(messages)) {
+    return
+  }
+  const dirs = new Set<string>()
+  for (const message of messages) {
+    for (const use of message.toolUses ?? []) {
+      for (const dir of dirsFromTool(use.tool, use.input)) {
+        dirs.add(dir)
+      }
+    }
+  }
+  const pending = [...dirs]
+  for (let at = 0; at < pending.length; at += 8) {
+    await Promise.all(pending.slice(at, at + 8).map(dir => noteTouched($, dir).catch(() => {})))
+  }
+}
+
 async function refreshAll($: EngineInterface): Promise<void> {
   const session = await probe($)
   await update($, info, () => session)
@@ -130,6 +159,9 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
     await refreshAll($)
+    try {
+      await replayTranscript($)
+    } catch {}
     return result
   })
 
@@ -142,7 +174,7 @@ export const register: Register = on => {
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const result = await next(e)
     try {
-      for (const dir of dirsFromCommand(e.command).reverse()) {
+      for (const dir of dirsFromTool('Bash', e)) {
         await noteTouched($, dir)
       }
     } catch {}

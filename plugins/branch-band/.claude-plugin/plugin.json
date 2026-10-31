@@ -1,6 +1,1 @@
-{
-  "name": "branch-band",
-  "version": "0.1.0",
-  "description": "Shows the git branch of every repo and worktree the chat touches, above the prompt",
-  "types": "./types/index.d.ts"
-}
+{ "name": "branch-band", "version": "0.2.0", "description": "Shows the session's current git branch above the prompt", "types": "./types/index.d.ts" }
