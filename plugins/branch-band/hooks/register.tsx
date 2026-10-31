@@ -5,6 +5,7 @@ import type { BranchInfo, RepoInfo } from '../types'
 
 const info = atom({ plugin: 'branch-band', key: 'info' } as const, null)
 const touched = atom({ plugin: 'branch-band', key: 'touched' } as const, [] as RepoInfo[])
+const hidden = atom({ plugin: 'branch-band', key: 'hidden' } as const, false)
 
 const KEEP_MS = 30 * 24 * 60 * 60 * 1000
 
@@ -217,11 +218,28 @@ async function refreshSession($: EngineInterface): Promise<void> {
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const result = await next(e)
+    await $.command.register({
+      name: 'branches',
+      description: 'Hide or show the branch band above the prompt',
+      argumentHint: '[on|off]',
+      immediate: true,
+    })
+    const isHidden = (await $.store.get('hidden')) === true
+    await update($, hidden, () => isHidden)
     await refreshSession($)
     try {
       await restore($)
     } catch {}
     return result
+  })
+
+  on('command.run', { command: 'branches' }, async ($, e) => {
+    const arg = e.args.trim().toLowerCase()
+    const wasHidden = (await read($, hidden)) ?? false
+    const isHidden = arg === 'off' ? true : arg === 'on' ? false : !wasHidden
+    await update($, hidden, () => isHidden)
+    await $.store.set('hidden', isHidden)
+    return { text: isHidden ? 'Branch band hidden. /branches to show it.' : 'Branch band shown.' }
   })
 
   on('turn.complete', async ($, e, next) => {
@@ -262,7 +280,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const session = await read($, info)
     const others = (await read($, touched)) ?? []
-    if (e.props.hasSurvey || (session === null && others.length === 0)) {
+    if (e.props.hasSurvey || (await read($, hidden)) || (session === null && others.length === 0)) {
       return next(e)
     }
 

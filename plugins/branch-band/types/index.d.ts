@@ -9,6 +9,6 @@ export type BranchInfo = RepoInfo | null
 
 declare module 'claude-code' {
   interface PluginState {
-    'branch-band': { info: BranchInfo; touched: RepoInfo[] }
+    'branch-band': { info: BranchInfo; touched: RepoInfo[]; hidden: boolean }
   }
 }

@@ -30,6 +30,11 @@ function engine(on: any, opts: { turns: number; saved?: unknown; transcript?: st
   on('session.start', (_: unknown, e: { cwd: string }) => ({ cwd: e.cwd }))
   on('turn.complete', () => ({}))
   on('tool.call', () => ({ result: {} }))
+  on('command.register', () => ({ value: { command: 'branches' } }))
+  on('ui.render', ($: any, e: unknown) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
   on('session.id', () => ({ value: 'abc' }))
   on('session.turns', () => ({ value: opts.turns }))
   on('clock.now', () => ({ value: 1_000 }))
@@ -123,4 +128,28 @@ test('a new chat reads no transcript and adds a worktree as soon as it is touche
   expect(all).toContain('  ⎇ gl: feat/picker (wt)')
   const saved = store.get('session:abc') as { repos: Array<{ top: string }> }
   expect(saved.repos.map(repo => repo.top)).toEqual(['/r/gl-wt/picker'])
+})
+
+test('/branches hides the band, remembers it, and shows it again', async ($, on) => {
+  const { store } = engine(on, { turns: 0 })
+
+  await $.session.start({ cwd: '/r/chief', surface: 'terminal', isInteractive: true })
+  expect((await bandText($))[0]).toContain('main')
+
+  const off = await $.command.run({ command: 'branches', args: '' } as never)
+  expect(JSON.stringify(off)).toContain('hidden')
+  expect((await bandText($))[0]).toBe('engine')
+  expect(store.get('hidden')).toBe(true)
+
+  await $.command.run({ command: 'branches', args: 'on' } as never)
+  expect((await bandText($))[0]).toContain('main')
+  expect(store.get('hidden')).toBe(false)
+})
+
+test('a chat started while hidden stays hidden', async ($, on) => {
+  const { store } = engine(on, { turns: 0 })
+  store.set('hidden', true)
+
+  await $.session.start({ cwd: '/r/chief', surface: 'terminal', isInteractive: true })
+  expect((await bandText($))[0]).toBe('engine')
 })
