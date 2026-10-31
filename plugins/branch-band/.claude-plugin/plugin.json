@@ -1,0 +1,6 @@
+{
+  "name": "branch-band",
+  "version": "0.1.0",
+  "description": "Shows the git branch of every repo and worktree the chat touches, above the prompt",
+  "types": "./types/index.d.ts"
+}

@@ -3,7 +3,7 @@
   "owner": {
     "name": "namdar12"
   },
-  "description": "Claude Code mods by namdar12: a Mermaid diagrams pane, a Claude Certified Architect practice quiz, and /park-all for upgrading with every session saved.",
+  "description": "Claude Code mods by namdar12: a Mermaid diagrams pane, a Claude Certified Architect practice quiz, /park-all for upgrading with every session saved, and a branch band showing the git branch of every repo the chat touches.",
   "plugins": [
     {
       "name": "mermaid-pane",
@@ -19,6 +19,11 @@
       "name": "session-park",
       "source": "./plugins/session-park",
       "description": "/park-all closes every Claude Code terminal session for an upgrade; /unpark-all reopens them resumed"
+    },
+    {
+      "name": "branch-band",
+      "source": "./plugins/branch-band",
+      "description": "Shows the git branch of every repo and worktree the chat touches, above the prompt"
     }
   ]
 }
